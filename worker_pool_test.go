@@ -1138,3 +1138,113 @@ func TestWorkerDoubleShutdown(t *testing.T) {
 		t.Fatalf("expected cancelled, got %s", s)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetConcurrency: dynamic concurrency adjustment
+// ---------------------------------------------------------------------------
+
+func TestSetConcurrency(t *testing.T) {
+	store := NewTaskStore()
+	var running atomic.Int32
+	proceed := make(chan struct{})
+
+	mock := &mockOllamaClient{
+		chatFn: func(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
+			running.Add(1)
+			defer running.Add(-1)
+			<-proceed
+			fn(api.ChatResponse{Message: api.Message{Content: "ok"}})
+			return nil
+		},
+	}
+	// Start with concurrency 1
+	pool := newTestPool(store, 1, mock)
+
+	// Submit 3 tasks — only 1 should run at a time
+	for i := range 3 {
+		id := fmt.Sprintf("a%d", i)
+		task := &Task{ID: id, Prompt: "p", Status: "pending", CreatedAt: time.Now()}
+		submitTestTask(store, pool, task)
+	}
+
+	// Wait for 1 to be running
+	waitForStatus(t, store, "a0", 2*time.Second, "running")
+	time.Sleep(50 * time.Millisecond) // let other goroutines block on sem
+	if r := running.Load(); r != 1 {
+		t.Fatalf("expected 1 running with concurrency 1, got %d", r)
+	}
+
+	// Release all 3 tasks
+	close(proceed)
+	for i := range 3 {
+		waitForStatus(t, store, fmt.Sprintf("a%d", i), 5*time.Second, "completed")
+	}
+
+	// Now increase concurrency to 3
+	pool.SetConcurrency(3)
+	if pool.Concurrency() != 3 {
+		t.Fatalf("expected concurrency 3, got %d", pool.Concurrency())
+	}
+
+	// Submit 3 more tasks — all 3 should run concurrently
+	proceed2 := make(chan struct{})
+	var running2 atomic.Int32
+	var maxSeen2 atomic.Int32
+	mock.chatFn = func(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
+		cur := running2.Add(1)
+		for {
+			old := maxSeen2.Load()
+			if cur <= old || maxSeen2.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		<-proceed2
+		running2.Add(-1)
+		fn(api.ChatResponse{Message: api.Message{Content: "ok"}})
+		return nil
+	}
+
+	for i := range 3 {
+		id := fmt.Sprintf("b%d", i)
+		task := &Task{ID: id, Prompt: "p", Status: "pending", CreatedAt: time.Now()}
+		submitTestTask(store, pool, task)
+	}
+
+	// Wait for all 3 to be running
+	for i := range 3 {
+		waitForStatus(t, store, fmt.Sprintf("b%d", i), 2*time.Second, "running")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if maxSeen2.Load() < 3 {
+		t.Fatalf("expected 3 concurrent with concurrency 3, max seen was %d", maxSeen2.Load())
+	}
+
+	close(proceed2)
+	for i := range 3 {
+		waitForStatus(t, store, fmt.Sprintf("b%d", i), 5*time.Second, "completed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency getter
+// ---------------------------------------------------------------------------
+
+func TestConcurrencyGetter(t *testing.T) {
+	store := NewTaskStore()
+	pool := newTestPool(store, 5, &mockOllamaClient{})
+
+	if pool.Concurrency() != 5 {
+		t.Fatalf("expected 5, got %d", pool.Concurrency())
+	}
+
+	pool.SetConcurrency(10)
+	if pool.Concurrency() != 10 {
+		t.Fatalf("expected 10, got %d", pool.Concurrency())
+	}
+
+	pool.SetConcurrency(1)
+	if pool.Concurrency() != 1 {
+		t.Fatalf("expected 1, got %d", pool.Concurrency())
+	}
+}

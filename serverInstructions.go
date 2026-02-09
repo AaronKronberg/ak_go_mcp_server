@@ -14,7 +14,7 @@ const serverInstructions = `You have access to a local Ollama worker pool for de
 This is a Go server sitting between you and Ollama. It handles everything that isn't a language problem:
 
 - **File I/O**: Reads input files from disk, writes output files after Ollama responds. Deterministic and instant — no model hallucinating paths or permissions.
-- **Concurrency**: Manages a semaphore-bounded worker pool. Multiple tasks run in parallel across GPU slots, with queuing, execution, and cleanup handled automatically.
+- **Concurrency**: Manages a semaphore-bounded worker pool with runtime-adjustable concurrency. Multiple tasks run in parallel across GPU slots, with queuing, execution, and cleanup handled automatically. Use the ` + "`concurrency`" + ` parameter on submit_tasks to tune parallelism at runtime.
 - **Text processing**: Strips markdown code fences from output before writing to disk (configurable). A string operation that would cost inference tokens if done by a model.
 - **Process execution**: Runs formatters (gofmt, prettier, etc.) after each file write with timeouts and error capture.
 - **Memory lifecycle**: Clears completed results from memory once written to disk. Cleans up input fields after terminal states. Keeps memory steady across large batches.
@@ -23,7 +23,7 @@ This is a Go server sitting between you and Ollama. It handles everything that i
 **What this means for you:**
 - You only need to decide *what* should change and write the prompt. The server handles reading the file, sending it to Ollama, cleaning up the output, writing it back, and running formatters.
 - When a task fails, the error tells you exactly what went wrong at which stage (file read, Ollama call, file write, or post-write command). Use this to debug and advise the user.
-- You don't manage concurrency — just submit tasks and the server queues them across available GPU slots.
+- Concurrency is adjustable at runtime via the ` + "`concurrency`" + ` parameter on submit_tasks — lower it for larger models (to avoid OOM), raise it for lightweight tasks. The setting persists until changed again.
 - File contents flow between disk and Ollama without entering your context window, so you can process hundreds of files without context pressure.
 
 ## SESSION STARTUP
@@ -117,6 +117,8 @@ Workers are less sophisticated than you. Treat them like a capable but literal j
    - "status_only": pass/fail only (fire-and-forget file transforms, validation checks)
    - "content": need the output in memory (summaries you'll reason over)
    - "json": structured data
+
+5. **Adjust concurrency when switching models**: Set ` + "`concurrency`" + ` on submit_tasks to control parallel Ollama requests. Use fewer workers for larger models (e.g. 1-2 for 30B+) and more for smaller ones (e.g. 3-4 for 7B). The setting persists across batches until changed again.
 
 ## MONITORING
 

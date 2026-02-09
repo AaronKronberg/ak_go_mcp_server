@@ -43,6 +43,15 @@ func (h *ToolHandlers) handleSubmitTasks(ctx context.Context, req *mcp.CallToolR
 		return nil, SubmitTasksOutput{}, fmt.Errorf("batch too large: %d tasks exceeds maximum of %d", len(args.Tasks), maxBatchSize)
 	}
 
+	// Apply concurrency change if requested (before task creation so the
+	// new semaphore is active when workers start)
+	if args.Concurrency != nil {
+		if *args.Concurrency <= 0 {
+			return nil, SubmitTasksOutput{}, fmt.Errorf("concurrency must be > 0, got %d", *args.Concurrency)
+		}
+		h.pool.SetConcurrency(*args.Concurrency)
+	}
+
 	// Validate all paths are absolute before creating any tasks (fail fast)
 	for i, spec := range args.Tasks {
 		if spec.InputFile != "" && !filepath.IsAbs(spec.InputFile) {

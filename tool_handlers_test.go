@@ -675,3 +675,95 @@ func TestHandleSubmitTasksStripMarkdownFencesExplicitFalse(t *testing.T) {
 		t.Fatal("StripMarkdownFences should be false when explicitly set to false")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// submit_tasks: concurrency parameter
+// ---------------------------------------------------------------------------
+
+func TestHandleSubmitTasksConcurrency(t *testing.T) {
+	mock := &mockOllamaClient{
+		chatFn: func(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
+			fn(api.ChatResponse{Message: api.Message{Content: "ok"}})
+			return nil
+		},
+	}
+	h := newTestHandlers(mock)
+
+	concurrency := 5
+	args := SubmitTasksArgs{
+		Concurrency: &concurrency,
+		Tasks: []TaskSpec{
+			{SystemPrompt: "sys", Prompt: "p"},
+		},
+	}
+	_, out, err := h.handleSubmitTasks(context.Background(), nil, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	waitForStatus(t, h.store, out.TaskIDs[0], 2*time.Second, "completed")
+
+	if h.pool.Concurrency() != 5 {
+		t.Fatalf("expected concurrency 5, got %d", h.pool.Concurrency())
+	}
+}
+
+func TestHandleSubmitTasksConcurrencyZeroRejected(t *testing.T) {
+	h := newTestHandlers(&mockOllamaClient{})
+
+	concurrency := 0
+	args := SubmitTasksArgs{
+		Concurrency: &concurrency,
+		Tasks: []TaskSpec{
+			{SystemPrompt: "sys", Prompt: "p"},
+		},
+	}
+	_, _, err := h.handleSubmitTasks(context.Background(), nil, args)
+	if err == nil {
+		t.Fatal("expected error for concurrency 0")
+	}
+}
+
+func TestHandleSubmitTasksConcurrencyNegativeRejected(t *testing.T) {
+	h := newTestHandlers(&mockOllamaClient{})
+
+	concurrency := -1
+	args := SubmitTasksArgs{
+		Concurrency: &concurrency,
+		Tasks: []TaskSpec{
+			{SystemPrompt: "sys", Prompt: "p"},
+		},
+	}
+	_, _, err := h.handleSubmitTasks(context.Background(), nil, args)
+	if err == nil {
+		t.Fatal("expected error for negative concurrency")
+	}
+}
+
+func TestHandleSubmitTasksConcurrencyNilIgnored(t *testing.T) {
+	mock := &mockOllamaClient{
+		chatFn: func(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
+			fn(api.ChatResponse{Message: api.Message{Content: "ok"}})
+			return nil
+		},
+	}
+	h := newTestHandlers(mock)
+
+	// Pool starts with concurrency 2 (from newTestHandlers)
+	originalConcurrency := h.pool.Concurrency()
+
+	args := SubmitTasksArgs{
+		// Concurrency is nil (not set)
+		Tasks: []TaskSpec{
+			{SystemPrompt: "sys", Prompt: "p"},
+		},
+	}
+	_, out, err := h.handleSubmitTasks(context.Background(), nil, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	waitForStatus(t, h.store, out.TaskIDs[0], 2*time.Second, "completed")
+
+	if h.pool.Concurrency() != originalConcurrency {
+		t.Fatalf("expected concurrency to remain %d, got %d", originalConcurrency, h.pool.Concurrency())
+	}
+}

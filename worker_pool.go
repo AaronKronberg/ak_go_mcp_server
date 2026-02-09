@@ -41,6 +41,7 @@ type OllamaClient interface {
 // WorkerPool manages concurrent Ollama inference requests.
 type WorkerPool struct {
 	sem                chan struct{}   // semaphore: buffered to max concurrent workers
+	semMu              sync.RWMutex   // guards sem for hot-swap via SetConcurrency
 	client             OllamaClient   // Ollama API client, created once and reused
 	store              *TaskStore     // shared task store for status updates
 	wg                 sync.WaitGroup // tracks in-flight goroutines for graceful shutdown
@@ -68,6 +69,24 @@ func NewWorkerPool(store *TaskStore) (*WorkerPool, error) {
 		client: client,
 		store:  store,
 	}, nil
+}
+
+// SetConcurrency replaces the semaphore with a new one of capacity n.
+// In-flight goroutines that already acquired a slot on the old semaphore
+// will release back to it when done — they drain naturally. New tasks
+// will acquire from the new semaphore.
+func (p *WorkerPool) SetConcurrency(n int) {
+	p.semMu.Lock()
+	p.sem = make(chan struct{}, n)
+	p.semMu.Unlock()
+}
+
+// Concurrency returns the current worker concurrency (semaphore capacity).
+func (p *WorkerPool) Concurrency() int {
+	p.semMu.RLock()
+	c := cap(p.sem)
+	p.semMu.RUnlock()
+	return c
 }
 
 // Submit starts a background goroutine to process the task. The goroutine
@@ -131,11 +150,18 @@ func (p *WorkerPool) postWriteCmdTimeout() time.Duration {
 // reads input files, calls Ollama with a timeout, optionally strips fences,
 // writes output files, runs post-write commands, and updates the store.
 func (p *WorkerPool) run(ctx context.Context, task *Task) {
+	// Capture the current semaphore under RLock. If SetConcurrency swaps
+	// in a new channel between now and when we release, we drain the old
+	// one correctly — no slots are leaked.
+	p.semMu.RLock()
+	sem := p.sem
+	p.semMu.RUnlock()
+
 	// Acquire a worker slot. Blocks here if all slots are in use — this is
 	// effectively the queue. The task stays in "pending" status while waiting.
 	select {
-	case p.sem <- struct{}{}:
-		defer func() { <-p.sem }()
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
 	case <-ctx.Done():
 		// Task was cancelled while waiting in the queue
 		return

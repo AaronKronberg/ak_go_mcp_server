@@ -74,6 +74,7 @@ func main() {
 			"and output_file to write results to disk. strip_markdown_fences (default: true) removes code fences before writing. " +
 			"post_write_cmd runs a shell command after writing (e.g. a formatter). " +
 			"You can specify model, tag (for grouping/filtering), response_hint (status_only|content|json), and timeout_seconds (default 600). " +
+			"Set concurrency to adjust the number of parallel Ollama requests (e.g. lower for larger models, higher for lightweight tasks). " +
 			"Always test with 2-3 tasks first before submitting a full batch.",
 	}, handlers.handleSubmitTasks)
 

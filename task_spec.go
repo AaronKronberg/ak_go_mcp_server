@@ -4,6 +4,12 @@ package main
 
 // SubmitTasksArgs is the input for the submit_tasks tool.
 type SubmitTasksArgs struct {
+	// Concurrency optionally adjusts the worker pool size for this and all
+	// subsequent batches. Use a lower value when running a larger model (to
+	// avoid OOM) or a higher value for lightweight tasks. If nil, the current
+	// concurrency is unchanged.
+	Concurrency *int `json:"concurrency,omitempty" jsonschema:"Set worker pool concurrency (number of parallel Ollama requests). Persists until changed again. Omit to keep current value."`
+
 	Tasks []TaskSpec `json:"tasks" jsonschema:"List of tasks to submit"`
 }
 
